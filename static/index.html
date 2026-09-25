@@ -3,32 +3,416 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>动物园谱系与繁育协调</title>
+  <title>配对复核台 · 动物园谱系与繁育协调</title>
   <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 2rem; color: #1f2937; }
-    main { max-width: 820px; margin: auto; }
-    pre { background: #f3f4f6; padding: 1rem; border-radius: 8px; overflow-x: auto; }
-    button { padding: .5rem .8rem; cursor: pointer; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0; background: #f8fafc; color: #1f2937; }
+    main { max-width: 1080px; margin: 0 auto; padding: 1.5rem; }
+    h1 { font-size: 1.4rem; margin: 0 0 1rem; }
+    h2 { font-size: 1.05rem; margin: 2rem 0 .6rem; }
+    table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 8px; overflow: hidden; box-shadow: 0 1px 2px rgba(0,0,0,.06); }
+    th, td { text-align: left; padding: .6rem .75rem; border-bottom: 1px solid #e5e7eb; vertical-align: top; font-size: .92rem; }
+    th { background: #f1f5f9; font-weight: 600; white-space: nowrap; }
+    .badge { display: inline-block; padding: .1rem .5rem; border-radius: 999px; font-size: .78rem; margin-left: .35rem; white-space: nowrap; }
+    .badge.ok { background: #dcfce7; color: #166534; }
+    .badge.warn { background: #fef9c3; color: #854d0e; }
+    .badge.bad { background: #fee2e2; color: #991b1b; }
+    .reasons { color: #b91c1c; margin: .25rem 0 0; padding-left: 1.1rem; }
+    .reasons li { margin: .1rem 0; }
+    .review-note { background: #fffbeb; border: 1px solid #fde68a; color: #92400e; border-radius: 6px; padding: .3rem .5rem; margin-bottom: .3rem; font-size: .85rem; }
+    .ok-text { color: #166534; }
+    button { padding: .35rem .8rem; cursor: pointer; border: 1px solid #cbd5e1; background: #fff; border-radius: 6px; margin: .1rem .1rem; }
+    button.primary { background: #2563eb; border-color: #2563eb; color: #fff; }
+    button.danger { color: #b91c1c; }
+    button:disabled { opacity: .45; cursor: not-allowed; }
+    select, input { padding: .35rem .5rem; border: 1px solid #cbd5e1; border-radius: 6px; }
+    .toolbar { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; background: #fff; padding: .75rem 1rem; border-radius: 8px; box-shadow: 0 1px 2px rgba(0,0,0,.06); }
+    .muted { color: #6b7280; font-size: .85rem; }
+    #message { margin-top: 1rem; padding: .6rem .8rem; border-radius: 6px; display: none; white-space: pre-wrap; }
+    #message.error { display: block; background: #fee2e2; color: #991b1b; }
+    #message.info { display: block; background: #dcfce7; color: #166534; }
+    .empty { color: #9ca3af; }
+    .panel { background: #fff; border-radius: 8px; box-shadow: 0 1px 2px rgba(0,0,0,.06); padding: .75rem 1rem; display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
   </style>
 </head>
 <body>
 <main>
-  <h1>动物园谱系与繁育协调</h1>
-  <p>这是最小演示页面。使用浏览器或 curl 调用 JSON API。</p>
-  <p><button onclick="checkHealth()">检查服务状态</button></p>
-  <pre id="result">等待操作</pre>
-  <h2>常用接口</h2>
-  <pre>GET  /health
-GET  /api/&lt;kind&gt;
-POST /api/&lt;kind&gt;
-GET  /api/entities/&lt;id&gt;
-POST /api/entities/&lt;id&gt;/actions</pre>
+  <h1>配对复核台</h1>
+  <div class="toolbar">
+    <label>用户 <input id="user-id" value="coord-1" size="10"></label>
+    <label>角色
+      <select id="role">
+        <option value="coordinator" selected>coordinator（繁育协调员）</option>
+        <option value="admin">admin</option>
+        <option value="veterinarian">veterinarian（兽医）</option>
+        <option value="registrar">registrar</option>
+        <option value="viewer">viewer</option>
+      </select>
+    </label>
+    <button onclick="run(reload)">刷新</button>
+    <span class="muted">批准/拒绝需 coordinator 或 admin；隔离/死亡需 veterinarian 或 admin。</span>
+  </div>
+  <div id="message"></div>
+
+  <h2>待复核配对</h2>
+  <table>
+    <thead><tr><th>配对</th><th>父本</th><th>母本</th><th>亲缘风险</th><th>复核结论</th><th>操作</th></tr></thead>
+    <tbody id="pending-body"></tbody>
+  </table>
+
+  <h2>已生效配对</h2>
+  <table>
+    <thead><tr><th>配对</th><th>父本</th><th>母本</th><th>审批快照</th><th>亲本当前状态</th><th>操作</th></tr></thead>
+    <tbody id="approved-body"></tbody>
+  </table>
+
+  <h2>新建配对建议</h2>
+  <div class="panel">
+    <label>父本 <select id="new-sire"></select></label>
+    <label>母本 <select id="new-dam"></select></label>
+    <button class="primary" onclick="createPairing()">提交配对建议</button>
+  </div>
+
+  <h2>个体名录</h2>
+  <table>
+    <thead><tr><th>姓名</th><th>性别</th><th>健康状态</th><th>操作</th></tr></thead>
+    <tbody id="animal-body"></tbody>
+  </table>
+
+  <h2>已结束配对</h2>
+  <table>
+    <thead><tr><th>配对</th><th>父本</th><th>母本</th><th>结果</th></tr></thead>
+    <tbody id="closed-body"></tbody>
+  </table>
 </main>
 <script>
-async function checkHealth() {
-  const response = await fetch('/health');
-  document.getElementById('result').textContent = JSON.stringify(await response.json(), null, 2);
+const THRESHOLD = 0.125;
+const STATUS_LABEL = { active: '在册', quarantined: '隔离中', deceased: '已死亡' };
+const STATUS_CLASS = { active: 'ok', quarantined: 'warn', deceased: 'bad' };
+const SEX_LABEL = { male: '雄', female: '雌', unknown: '未知' };
+const state = { animals: [], pairings: [], drafts: {} };
+
+const $ = (id) => document.getElementById(id);
+const userId = () => $('user-id').value.trim() || 'coord-1';
+
+function escapeHtml(value) {
+  return String(value).replace(/[&<>"']/g, (ch) => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]
+  ));
 }
+
+async function api(path, options = {}) {
+  const response = await fetch(path, {
+    ...options,
+    headers: { 'Content-Type': 'application/json', 'X-User-Id': userId(), 'X-Role': $('role').value },
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.error || ('请求失败：' + response.status));
+  return payload;
+}
+
+function showMessage(text, kind = 'info') {
+  const box = $('message');
+  box.textContent = text;
+  box.className = kind;
+}
+
+async function run(action) {
+  try { await action(); } catch (err) { showMessage(err.message, 'error'); }
+}
+
+async function reload() {
+  const [animals, pairings] = await Promise.all([api('/api/animals'), api('/api/pairings')]);
+  state.animals = animals.items;
+  state.pairings = pairings.items;
+  render();
+}
+
+const animalById = (id) => state.animals.find((a) => a.id === id);
+const shortId = (id) => String(id).slice(0, 8);
+
+function kinship(sire, dam) {
+  if (!sire || !dam) return null;
+  if (sire.id === dam.id) return 0.5;
+  if ((sire.data.sire_id && sire.data.sire_id === dam.id) ||
+      (dam.data.sire_id && dam.data.sire_id === sire.id)) return 0.25;
+  return 0.0;
+}
+
+function healthBlockers(sire, dam) {
+  const blockers = [];
+  [['父本', sire], ['母本', dam]].forEach(([label, animal]) => {
+    if (!animal) { blockers.push(label + '信息缺失'); return; }
+    const name = animal.data.name || animal.id;
+    if (animal.status === 'quarantined') blockers.push(`${label}「${name}」正在隔离`);
+    else if (animal.status === 'deceased') blockers.push(`${label}「${name}」已死亡`);
+    else if (animal.status !== 'active') blockers.push(`${label}「${name}」状态为 ${animal.status}，不可繁育`);
+  });
+  return blockers;
+}
+
+function pairingBlockers(sire, dam) {
+  const blockers = healthBlockers(sire, dam);
+  const coefficient = kinship(sire, dam);
+  if (sire && dam && coefficient > THRESHOLD) {
+    blockers.push(`亲缘系数 ${coefficient.toFixed(2)} 高于阈值 ${THRESHOLD}，近亲风险过高`);
+  }
+  return blockers;
+}
+
+function parentCell(animal) {
+  if (!animal) return '<span class="muted">未指定</span>';
+  const label = STATUS_LABEL[animal.status] || animal.status;
+  const cls = STATUS_CLASS[animal.status] || 'warn';
+  return `${escapeHtml(animal.data.name || animal.id)}<span class="badge ${cls}">${label}</span>`;
+}
+
+function kinshipCell(sire, dam) {
+  const coefficient = kinship(sire, dam);
+  if (coefficient === null) return '<span class="muted">—</span>';
+  const pct = (coefficient * 100).toFixed(1) + '%';
+  return coefficient > THRESHOLD
+    ? `${pct}<span class="badge bad">风险高</span>`
+    : `${pct}<span class="badge ok">正常</span>`;
+}
+
+function verdictCell(pairing, blockers) {
+  let html = '';
+  if (pairing.data.review_reason) {
+    html += `<div class="review-note">退回原因：${escapeHtml(pairing.data.review_reason)}</div>`;
+  }
+  if (blockers.length) {
+    html += '<ul class="reasons">' + blockers.map((b) => `<li>${escapeHtml(b)}</li>`).join('') + '</ul>';
+  } else {
+    html += '<span class="ok-text">可批准</span>';
+  }
+  return html;
+}
+
+function parentSelect(pairingId, field) {
+  const draft = state.drafts[pairingId] || {};
+  const current = draft[field] || '';
+  const options = state.animals.map((a) =>
+    `<option value="${a.id}" ${a.id === current ? 'selected' : ''}>` +
+    `${escapeHtml(a.data.name || a.id)}（${STATUS_LABEL[a.status] || a.status}）</option>`
+  ).join('');
+  return `<select onchange="setDraft('${pairingId}','${field}',this.value)">` +
+    `<option value="">选择亲本…</option>${options}</select>`;
+}
+
+function setDraft(pairingId, field, value) {
+  const draft = state.drafts[pairingId] || (state.drafts[pairingId] = {});
+  draft[field] = value;
+  render();
+}
+
+function renderPending() {
+  const rows = state.pairings.filter((p) => p.status === 'proposed');
+  if (!rows.length) {
+    $('pending-body').innerHTML = '<tr><td colspan="6" class="empty">暂无待复核配对</td></tr>';
+    return;
+  }
+  $('pending-body').innerHTML = rows.map((p) => {
+    const draft = state.drafts[p.id] || {};
+    const sire = animalById(p.data.sire_id || draft.sire_id);
+    const dam = animalById(p.data.dam_id || draft.dam_id);
+    const blockers = pairingBlockers(sire, dam);
+    const reason = blockers.join('；');
+    return `<tr>
+      <td><code title="${p.id}">${shortId(p.id)}</code><div class="muted">提出人：${escapeHtml(p.data.proposed_by || '—')}</div></td>
+      <td>${p.data.sire_id ? parentCell(sire) : parentSelect(p.id, 'sire_id')}</td>
+      <td>${p.data.dam_id ? parentCell(dam) : parentSelect(p.id, 'dam_id')}</td>
+      <td>${kinshipCell(sire, dam)}</td>
+      <td>${verdictCell(p, blockers)}</td>
+      <td>
+        <button class="primary" ${blockers.length ? 'disabled title="' + escapeHtml(reason) + '"' : ''} onclick="approvePairing('${p.id}')">批准</button>
+        <button class="danger" onclick="rejectPairing('${p.id}')">拒绝</button>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+function renderApproved() {
+  const rows = state.pairings.filter((p) => p.status === 'approved');
+  if (!rows.length) {
+    $('approved-body').innerHTML = '<tr><td colspan="6" class="empty">暂无已生效配对</td></tr>';
+    return;
+  }
+  $('approved-body').innerHTML = rows.map((p) => {
+    const sire = animalById(p.data.sire_id);
+    const dam = animalById(p.data.dam_id);
+    const blockers = healthBlockers(sire, dam);
+    const coefficient = typeof p.data.inbreeding_coefficient === 'number'
+      ? (p.data.inbreeding_coefficient * 100).toFixed(1) + '%' : '—';
+    const snapshot = `父本 v${p.data.sire_version ?? '—'} · 母本 v${p.data.dam_version ?? '—'}` +
+      `<div class="muted">审批人：${escapeHtml(p.data.approved_by || '—')} · 亲缘 ${coefficient}</div>`;
+    const health = blockers.length
+      ? '<ul class="reasons">' + blockers.map((b) => `<li>${escapeHtml(b)}</li>`).join('') + '</ul>'
+      : '<span class="ok-text">正常</span>';
+    return `<tr>
+      <td><code title="${p.id}">${shortId(p.id)}</code></td>
+      <td>${parentCell(sire)}</td>
+      <td>${parentCell(dam)}</td>
+      <td>${snapshot}</td>
+      <td>${health}</td>
+      <td><button class="primary" ${blockers.length ? 'disabled title="' + escapeHtml(blockers.join('；')) + '"' : ''} onclick="completePairing('${p.id}')">登记完成</button></td>
+    </tr>`;
+  }).join('');
+}
+
+function renderAnimals() {
+  if (!state.animals.length) {
+    $('animal-body').innerHTML = '<tr><td colspan="4" class="empty">暂无个体</td></tr>';
+    return;
+  }
+  $('animal-body').innerHTML = state.animals.map((a) => {
+    const actions = [];
+    if (a.status === 'active') {
+      actions.push(`<button onclick="quarantineAnimal('${a.id}')">隔离</button>`);
+      actions.push(`<button class="danger" onclick="deceaseAnimal('${a.id}')">死亡</button>`);
+    } else if (a.status === 'quarantined') {
+      actions.push(`<button onclick="releaseAnimal('${a.id}')">解除隔离</button>`);
+    }
+    return `<tr>
+      <td>${escapeHtml(a.data.name || a.id)}</td>
+      <td>${SEX_LABEL[a.data.sex] || a.data.sex || '—'}</td>
+      <td><span class="badge ${STATUS_CLASS[a.status] || 'warn'}">${STATUS_LABEL[a.status] || a.status}</span></td>
+      <td>${actions.join(' ')}</td>
+    </tr>`;
+  }).join('');
+}
+
+function renderClosed() {
+  const rows = state.pairings.filter((p) => p.status === 'completed' || p.status === 'rejected');
+  if (!rows.length) {
+    $('closed-body').innerHTML = '<tr><td colspan="4" class="empty">暂无已结束配对</td></tr>';
+    return;
+  }
+  $('closed-body').innerHTML = rows.map((p) => {
+    const result = p.status === 'completed'
+      ? `<span class="badge ok">已完成</span> 幼崽：${escapeHtml((p.data.offspring_ids || []).join('、') || '—')}`
+      : `<span class="badge bad">已拒绝</span> ${escapeHtml(p.data.reason || '')}`;
+    return `<tr>
+      <td><code title="${p.id}">${shortId(p.id)}</code></td>
+      <td>${parentCell(animalById(p.data.sire_id))}</td>
+      <td>${parentCell(animalById(p.data.dam_id))}</td>
+      <td>${result}</td>
+    </tr>`;
+  }).join('');
+}
+
+function renderCreateForm() {
+  const options = state.animals.map((a) =>
+    `<option value="${a.id}">${escapeHtml(a.data.name || a.id)}（${STATUS_LABEL[a.status] || a.status}）</option>`
+  ).join('');
+  $('new-sire').innerHTML = '<option value="">选择父本…</option>' + options;
+  $('new-dam').innerHTML = '<option value="">选择母本…</option>' + options;
+}
+
+function render() {
+  renderPending();
+  renderApproved();
+  renderAnimals();
+  renderClosed();
+  renderCreateForm();
+}
+
+async function approvePairing(id) {
+  await run(async () => {
+    const pairing = state.pairings.find((p) => p.id === id);
+    const draft = state.drafts[id] || {};
+    await api(`/api/entities/${id}/actions`, {
+      method: 'POST',
+      body: JSON.stringify({
+        action: 'approve',
+        data: {
+          sire_id: pairing.data.sire_id || draft.sire_id,
+          dam_id: pairing.data.dam_id || draft.dam_id,
+          approvals: [userId()],
+        },
+        expected_version: pairing.version,
+      }),
+    });
+    delete state.drafts[id];
+    showMessage('配对已批准生效，审批快照已记录双方当前版本。');
+    await reload();
+  });
+}
+
+async function rejectPairing(id) {
+  const reason = prompt('请输入拒绝原因');
+  if (!reason) return;
+  await run(async () => {
+    const pairing = state.pairings.find((p) => p.id === id);
+    await api(`/api/entities/${id}/actions`, {
+      method: 'POST',
+      body: JSON.stringify({ action: 'reject', data: { reason }, expected_version: pairing.version }),
+    });
+    showMessage('配对已拒绝。');
+    await reload();
+  });
+}
+
+async function completePairing(id) {
+  const input = prompt('请输入幼崽个体ID，多个用英文逗号分隔');
+  if (!input) return;
+  const offspring = input.split(',').map((s) => s.trim()).filter(Boolean);
+  if (!offspring.length) return;
+  await run(async () => {
+    const pairing = state.pairings.find((p) => p.id === id);
+    await api(`/api/entities/${id}/actions`, {
+      method: 'POST',
+      body: JSON.stringify({ action: 'complete', data: { offspring_ids: offspring }, expected_version: pairing.version }),
+    });
+    showMessage('配对已登记完成。');
+    await reload();
+  });
+}
+
+async function createPairing() {
+  await run(async () => {
+    const sireId = $('new-sire').value;
+    const damId = $('new-dam').value;
+    if (!sireId || !damId) { showMessage('请选择父本和母本。', 'error'); return; }
+    await api('/api/pairings', {
+      method: 'POST',
+      body: JSON.stringify({ proposed_by: userId(), sire_id: sireId, dam_id: damId }),
+    });
+    showMessage('配对建议已提交，等待复核。');
+    await reload();
+  });
+}
+
+async function animalAction(id, action, data) {
+  await run(async () => {
+    const animal = animalById(id);
+    await api(`/api/entities/${id}/actions`, {
+      method: 'POST',
+      body: JSON.stringify({ action, data, expected_version: animal.version }),
+    });
+    await reload();
+  });
+}
+
+async function quarantineAnimal(id) {
+  const reason = prompt('请输入隔离原因');
+  if (!reason) return;
+  await animalAction(id, 'quarantine_animal', { reason });
+  showMessage('个体已隔离，涉及它的已生效配对已自动退回待复核。');
+}
+
+async function releaseAnimal(id) {
+  await animalAction(id, 'release_quarantine', {});
+  showMessage('个体已解除隔离，被退回的配对需重新批准。');
+}
+
+async function deceaseAnimal(id) {
+  const cause = prompt('请输入死亡原因');
+  if (!cause) return;
+  await animalAction(id, 'mark_deceased', { cause });
+  showMessage('个体已登记死亡，涉及它的已生效配对已自动退回待复核。');
+}
+
+document.addEventListener('DOMContentLoaded', () => run(reload));
 </script>
 </body>
 </html>

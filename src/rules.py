@@ -8,9 +8,22 @@ from .domain import (
 )
 
 
+INBREEDING_THRESHOLD = 0.125
+
+
 def _validate_animal(actor, data, lookup):
     if data.get("sex") not in ("male", "female", "unknown"):
         raise ValidationError("sex must be male, female or unknown")
+
+
+def _validate_pairing_create(actor, data, lookup):
+    sire_id = data.get("sire_id")
+    dam_id = data.get("dam_id")
+    if sire_id and dam_id and sire_id == dam_id:
+        raise ValidationError("父本和母本不能是同一只动物")
+    for label, animal_id in (("父本", sire_id), ("母本", dam_id)):
+        if animal_id and not _find_one(lookup, "animal", "id", animal_id):
+            raise ValidationError("%s不存在：%s" % (label, animal_id))
 
 
 def inbreeding_coefficient(sire, dam):
@@ -27,20 +40,86 @@ def inbreeding_coefficient(sire, dam):
     return 0.0
 
 
+def _animal_view(entity):
+    view = dict(entity.get("data") or {})
+    view["id"] = entity.get("id")
+    return view
+
+
+def kinship_coefficient(sire, dam):
+    """Inbreeding coefficient between two animal entities (id + data)."""
+    return inbreeding_coefficient(_animal_view(sire), _animal_view(dam))
+
+
+def health_blockers(sire, dam):
+    """Reasons a pairing must not proceed because of parent health/status."""
+    blockers = []
+    for label, animal in (("父本", sire), ("母本", dam)):
+        if not animal:
+            blockers.append("%s信息缺失" % label)
+            continue
+        name = (animal.get("data") or {}).get("name") or animal.get("id")
+        status = animal.get("status")
+        if status == "quarantined":
+            blockers.append("%s「%s」正在隔离" % (label, name))
+        elif status == "deceased":
+            blockers.append("%s「%s」已死亡" % (label, name))
+        elif status != "active":
+            blockers.append("%s「%s」状态为 %s，不可繁育" % (label, name, status))
+    return blockers
+
+
+def pairing_blockers(sire, dam):
+    """All reasons a pairing must not be approved right now."""
+    blockers = health_blockers(sire, dam)
+    if sire and dam:
+        coefficient = kinship_coefficient(sire, dam)
+        if coefficient > INBREEDING_THRESHOLD:
+            blockers.append(
+                "亲缘系数 %.2f 高于阈值 %.2f，近亲风险过高"
+                % (coefficient, INBREEDING_THRESHOLD)
+            )
+    return blockers
+
+
+def _resolve_parent(lookup, entity, data, field):
+    animal_id = data.get(field) or (entity.get("data") or {}).get(field)
+    if not animal_id:
+        return None, None
+    return animal_id, _find_one(lookup, "animal", "id", animal_id)
+
+
 def _validate_pairing(actor, entity, data, lookup):
-    sire = _find_one(lookup, "animal", "id", data.get("sire_id"))
-    dam = _find_one(lookup, "animal", "id", data.get("dam_id"))
+    sire_id, sire = _resolve_parent(lookup, entity, data, "sire_id")
+    dam_id, dam = _resolve_parent(lookup, entity, data, "dam_id")
     if not sire or not dam:
-        raise ValidationError("pairing requires two existing animals")
-    if sire["status"] != "active" or dam["status"] != "active":
-        raise ValidationError("pairing animals must be active")
-    if inbreeding_coefficient(sire["data"], dam["data"]) > 0.125:
-        raise ValidationError("pairing exceeds inbreeding threshold")
-    return {"approved_by": actor.user_id}
+        raise ValidationError("配对需要两只已登记的亲本动物")
+    blockers = pairing_blockers(sire, dam)
+    if blockers:
+        raise ValidationError("；".join(blockers))
+    return {
+        "approved_by": actor.user_id,
+        "sire_id": sire_id,
+        "dam_id": dam_id,
+        "sire_version": sire["version"],
+        "dam_version": dam["version"],
+        "inbreeding_coefficient": kinship_coefficient(sire, dam),
+        "review_reason": "",
+    }
 
 
-CUSTOM_CREATE = {'animal': _validate_animal}
-CUSTOM_TRANSITIONS = {('pairing', 'approve'): _validate_pairing}
+def _validate_pairing_complete(actor, entity, data, lookup):
+    stored = entity.get("data") or {}
+    sire = _find_one(lookup, "animal", "id", stored.get("sire_id"))
+    dam = _find_one(lookup, "animal", "id", stored.get("dam_id"))
+    blockers = health_blockers(sire, dam)
+    if blockers:
+        raise ValidationError("无法安排完成：" + "；".join(blockers))
+    return {}
+
+
+CUSTOM_CREATE = {'animal': _validate_animal, 'pairing': _validate_pairing_create}
+CUSTOM_TRANSITIONS = {('pairing', 'approve'): _validate_pairing, ('pairing', 'complete'): _validate_pairing_complete}
 
 
 class RuleEngine:
@@ -48,7 +127,7 @@ class RuleEngine:
     INITIAL_STATUS = {'animal': 'active', 'pairing': 'proposed', 'transfer': 'planned'}
     TRANSITIONS = {'animal': {'mark_deceased': (('active',), 'deceased'), 'quarantine_animal': (('active',), 'quarantined'), 'release_quarantine': (('quarantined',), 'active')}, 'pairing': {'approve': (('proposed',), 'approved'), 'reject': (('proposed',), 'rejected'), 'complete': (('approved',), 'completed')}, 'transfer': {'authorize': (('planned',), 'authorized'), 'ship': (('authorized',), 'in_transit'), 'arrive': (('in_transit',), 'completed')}}
     CREATE_REQUIRED = {'animal': ('name', 'sex'), 'pairing': ('proposed_by',), 'transfer': ('animal_id', 'from_institution', 'to_institution')}
-    ACTION_REQUIRED = {('animal', 'mark_deceased'): ('cause',), ('animal', 'quarantine_animal'): ('reason',), ('pairing', 'approve'): ('sire_id', 'dam_id', 'approvals'), ('pairing', 'reject'): ('reason',), ('pairing', 'complete'): ('offspring_ids',), ('transfer', 'authorize'): ('permit_id',), ('transfer', 'ship'): ('transport_id',), ('transfer', 'arrive'): ('arrival_date',)}
+    ACTION_REQUIRED = {('animal', 'mark_deceased'): ('cause',), ('animal', 'quarantine_animal'): ('reason',), ('pairing', 'approve'): ('approvals',), ('pairing', 'reject'): ('reason',), ('pairing', 'complete'): ('offspring_ids',), ('transfer', 'authorize'): ('permit_id',), ('transfer', 'ship'): ('transport_id',), ('transfer', 'arrive'): ('arrival_date',)}
     CREATE_ROLES = {'animal': ('admin', 'registrar'), 'pairing': ('admin', 'coordinator'), 'transfer': ('admin', 'registrar')}
     ROLE_ACTIONS = {'mark_deceased': ('admin', 'veterinarian'), 'quarantine_animal': ('admin', 'veterinarian'), 'release_quarantine': ('admin', 'veterinarian'), 'approve': ('admin', 'coordinator'), 'reject': ('admin', 'coordinator'), 'complete': ('admin', 'coordinator'), 'authorize': ('admin', 'registrar'), 'ship': ('admin', 'registrar'), 'arrive': ('admin', 'registrar')}
 
