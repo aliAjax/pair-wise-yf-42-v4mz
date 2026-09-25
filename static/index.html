@@ -3,32 +3,219 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>动物园谱系与繁育协调</title>
+  <title>配对复核台 · 动物园谱系与繁育协调</title>
   <style>
-    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 2rem; color: #1f2937; }
-    main { max-width: 820px; margin: auto; }
-    pre { background: #f3f4f6; padding: 1rem; border-radius: 8px; overflow-x: auto; }
-    button { padding: .5rem .8rem; cursor: pointer; }
+    * { box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; margin: 0; background: #f1f5f9; color: #1f2937; }
+    header { background: #0f766e; color: #fff; padding: .9rem 1.5rem; display: flex; flex-wrap: wrap; gap: .8rem; align-items: center; justify-content: space-between; }
+    header h1 { font-size: 1.15rem; margin: 0; }
+    header label { font-size: .85rem; margin-right: .8rem; }
+    header input, header select { padding: .25rem .4rem; border-radius: 6px; border: none; }
+    main { max-width: 1080px; margin: 1.4rem auto; padding: 0 1rem; }
+    section { background: #fff; border-radius: 10px; padding: 1rem 1.2rem; margin-bottom: 1.4rem; box-shadow: 0 1px 3px rgba(15, 23, 42, .08); }
+    h2 { font-size: 1.05rem; margin: .2rem 0 .8rem; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; padding: .55rem .6rem; border-bottom: 1px solid #e2e8f0; font-size: .9rem; vertical-align: top; }
+    th { color: #475569; font-weight: 600; }
+    .tag { display: inline-block; padding: .1rem .55rem; border-radius: 999px; font-size: .78rem; white-space: nowrap; }
+    .tag.ok { background: #dcfce7; color: #166534; }
+    .tag.warn { background: #fef9c3; color: #854d0e; }
+    .tag.bad { background: #fee2e2; color: #991b1b; }
+    .tag.info { background: #e0f2fe; color: #075985; }
+    .reasons { margin: .25rem 0 0; padding-left: 1.1rem; color: #b91c1c; font-size: .82rem; }
+    .muted { color: #64748b; font-size: .82rem; }
+    button { padding: .4rem .8rem; border: none; border-radius: 6px; background: #0f766e; color: #fff; cursor: pointer; font-size: .85rem; margin-right: .4rem; }
+    button.ghost { background: #e2e8f0; color: #1f2937; }
+    button:disabled { opacity: .45; cursor: not-allowed; }
+    #message { white-space: pre-wrap; font-size: .88rem; min-height: 1.2rem; }
+    #message.error { color: #b91c1c; }
+    #message.ok { color: #166534; }
+    .form-row { display: flex; gap: .8rem; flex-wrap: wrap; align-items: center; }
+    select { padding: .35rem .5rem; }
   </style>
 </head>
 <body>
+<header>
+  <h1>配对复核台</h1>
+  <div>
+    <label>操作人 <input id="userId" value="coordinator-1" size="12"></label>
+    <label>角色 <select id="role">
+      <option value="coordinator" selected>coordinator</option>
+      <option value="admin">admin</option>
+      <option value="veterinarian">veterinarian</option>
+      <option value="registrar">registrar</option>
+      <option value="viewer">viewer</option>
+    </select></label>
+    <button class="ghost" onclick="loadAll()">刷新</button>
+  </div>
+</header>
 <main>
-  <h1>动物园谱系与繁育协调</h1>
-  <p>这是最小演示页面。使用浏览器或 curl 调用 JSON API。</p>
-  <p><button onclick="checkHealth()">检查服务状态</button></p>
-  <pre id="result">等待操作</pre>
-  <h2>常用接口</h2>
-  <pre>GET  /health
-GET  /api/&lt;kind&gt;
-POST /api/&lt;kind&gt;
-GET  /api/entities/&lt;id&gt;
-POST /api/entities/&lt;id&gt;/actions</pre>
+  <p id="message"></p>
+  <section>
+    <h2>待复核配对</h2>
+    <div id="pending"></div>
+  </section>
+  <section>
+    <h2>已生效配对</h2>
+    <div id="approved"></div>
+  </section>
+  <section>
+    <h2>新建配对建议</h2>
+    <div class="form-row">
+      <label>父本 <select id="sireSelect"></select></label>
+      <label>母本 <select id="damSelect"></select></label>
+      <button onclick="createPairing()">提交配对建议</button>
+    </div>
+  </section>
 </main>
 <script>
-async function checkHealth() {
-  const response = await fetch('/health');
-  document.getElementById('result').textContent = JSON.stringify(await response.json(), null, 2);
+const STATUS_LABEL = { active: '健康', quarantined: '隔离中', deceased: '已死亡' };
+const STATUS_CLASS = { active: 'ok', quarantined: 'warn', deceased: 'bad' };
+const RISK_LABEL = { low: '低风险', medium: '中风险', high: '高风险' };
+const RISK_CLASS = { low: 'ok', medium: 'warn', high: 'bad' };
+
+function esc(value) {
+  return String(value == null ? '' : value).replace(/[&<>"']/g, ch => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]
+  ));
 }
+function currentUser() { return document.getElementById('userId').value.trim() || 'anonymous'; }
+function currentRole() { return document.getElementById('role').value; }
+function authHeaders() {
+  return { 'Content-Type': 'application/json', 'X-User-Id': currentUser(), 'X-Role': currentRole() };
+}
+function showMessage(text, isError) {
+  const el = document.getElementById('message');
+  el.textContent = text || '';
+  el.className = isError ? 'error' : 'ok';
+}
+function shortId(id) { return id && id.length > 8 ? id.slice(0, 8) + '…' : id; }
+
+function parentCell(parent) {
+  if (!parent) return '<span class="muted">未指定</span>';
+  const label = STATUS_LABEL[parent.status] || parent.status;
+  const cls = STATUS_CLASS[parent.status] || 'info';
+  return `${esc(parent.name)} <span class="tag ${cls}">${esc(label)}</span><br>` +
+    `<span class="muted">当前版本 v${parent.version}</span>`;
+}
+function riskCell(item) {
+  if (item.inbreeding_coefficient === null || item.inbreeding_coefficient === undefined) {
+    return '<span class="muted">—</span>';
+  }
+  const label = RISK_LABEL[item.risk_level] || item.risk_level;
+  const cls = RISK_CLASS[item.risk_level] || 'info';
+  return `<span class="tag ${cls}">${esc(label)}</span> ` +
+    `<span class="muted">F=${item.inbreeding_coefficient.toFixed(3)}</span>`;
+}
+function blockersCell(item) {
+  const parts = [];
+  if (item.review_reason) {
+    parts.push(`<div class="muted">自动转回：${esc(item.review_reason)}</div>`);
+  }
+  if (item.blockers && item.blockers.length) {
+    parts.push('<ul class="reasons">' + item.blockers.map(b => `<li>${esc(b)}</li>`).join('') + '</ul>');
+  }
+  return parts.join('') || '<span class="muted">无</span>';
+}
+
+function renderPending(items) {
+  const rows = items.filter(i => i.status === 'proposed');
+  const el = document.getElementById('pending');
+  if (!rows.length) { el.innerHTML = '<p class="muted">暂无待复核配对。</p>'; return; }
+  el.innerHTML = '<table><thead><tr>' +
+    '<th>配对</th><th>父本</th><th>母本</th><th>亲缘风险</th><th>阻断原因</th><th>操作</th>' +
+    '</tr></thead><tbody>' + rows.map(item => `<tr>
+      <td title="${esc(item.id)}">${esc(shortId(item.id))}<br><span class="muted">提议人 ${esc(item.proposed_by || '—')}</span></td>
+      <td>${parentCell(item.sire)}</td>
+      <td>${parentCell(item.dam)}</td>
+      <td>${riskCell(item)}</td>
+      <td>${blockersCell(item)}</td>
+      <td>
+        <button ${item.approvable ? '' : 'disabled title="存在阻断原因，无法批准"'}
+          onclick="approvePairing('${esc(item.id)}', ${item.version})">确认生效</button>
+        <button class="ghost" onclick="rejectPairing('${esc(item.id)}', ${item.version})">驳回</button>
+      </td>
+    </tr>`).join('') + '</tbody></table>';
+}
+
+function renderApproved(items) {
+  const rows = items.filter(i => i.status === 'approved');
+  const el = document.getElementById('approved');
+  if (!rows.length) { el.innerHTML = '<p class="muted">暂无已生效配对。</p>'; return; }
+  el.innerHTML = '<table><thead><tr>' +
+    '<th>配对</th><th>父本</th><th>母本</th><th>亲缘风险</th><th>批准时亲本版本</th><th>批准人</th>' +
+    '</tr></thead><tbody>' + rows.map(item => `<tr>
+      <td title="${esc(item.id)}">${esc(shortId(item.id))}</td>
+      <td>${parentCell(item.sire)}</td>
+      <td>${parentCell(item.dam)}</td>
+      <td>${riskCell(item)}</td>
+      <td>父本 ${item.sire_version != null ? 'v' + item.sire_version : '—'} · 母本 ${item.dam_version != null ? 'v' + item.dam_version : '—'}</td>
+      <td>${esc(item.approved_by || '—')}</td>
+    </tr>`).join('') + '</tbody></table>';
+}
+
+function renderAnimalOptions(animals) {
+  const options = animals.map(a =>
+    `<option value="${esc(a.id)}">${esc(a.data.name || a.id)}（${esc(STATUS_LABEL[a.status] || a.status)}）</option>`
+  ).join('');
+  document.getElementById('sireSelect').innerHTML = '<option value="">请选择</option>' + options;
+  document.getElementById('damSelect').innerHTML = '<option value="">请选择</option>' + options;
+}
+
+async function approvePairing(id, version) {
+  const res = await fetch(`/api/entities/${id}/actions`, {
+    method: 'POST', headers: authHeaders(),
+    body: JSON.stringify({ action: 'approve', data: { approvals: [currentUser()] }, expected_version: version })
+  });
+  const body = await res.json();
+  if (!res.ok) {
+    showMessage('批准被阻止：' + (body.error || res.status), true);
+  } else {
+    showMessage(`配对 ${shortId(id)} 已确认生效，记录亲本版本：父本 v${body.data.sire_version} / 母本 v${body.data.dam_version}。`);
+  }
+  await loadAll();
+}
+
+async function rejectPairing(id, version) {
+  const reason = prompt('请输入驳回原因：');
+  if (!reason) return;
+  const res = await fetch(`/api/entities/${id}/actions`, {
+    method: 'POST', headers: authHeaders(),
+    body: JSON.stringify({ action: 'reject', data: { reason }, expected_version: version })
+  });
+  const body = await res.json();
+  showMessage(res.ok ? `配对 ${shortId(id)} 已驳回。` : '驳回失败：' + (body.error || res.status), !res.ok);
+  await loadAll();
+}
+
+async function createPairing() {
+  const sire = document.getElementById('sireSelect').value;
+  const dam = document.getElementById('damSelect').value;
+  if (!sire || !dam) { showMessage('请选择父本和母本。', true); return; }
+  const res = await fetch('/api/pairings', {
+    method: 'POST', headers: authHeaders(),
+    body: JSON.stringify({ proposed_by: currentUser(), sire_id: sire, dam_id: dam })
+  });
+  const body = await res.json();
+  showMessage(res.ok ? '已提交配对建议，等待复核。' : '创建失败：' + (body.error || res.status), !res.ok);
+  await loadAll();
+}
+
+async function loadAll() {
+  try {
+    const [reviewRes, animalsRes] = await Promise.all([
+      fetch('/api/pairing-review'), fetch('/api/animals')
+    ]);
+    const review = await reviewRes.json();
+    const animals = await animalsRes.json();
+    renderPending(review.items || []);
+    renderApproved(review.items || []);
+    renderAnimalOptions(animals.items || []);
+  } catch (err) {
+    showMessage('加载失败：' + err.message, true);
+  }
+}
+loadAll();
 </script>
 </body>
 </html>

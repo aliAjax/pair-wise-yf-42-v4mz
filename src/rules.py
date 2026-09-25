@@ -8,6 +8,9 @@ from .domain import (
 )
 
 
+INBREEDING_THRESHOLD = 0.125
+
+
 def _validate_animal(actor, data, lookup):
     if data.get("sex") not in ("male", "female", "unknown"):
         raise ValidationError("sex must be male, female or unknown")
@@ -27,20 +30,89 @@ def inbreeding_coefficient(sire, dam):
     return 0.0
 
 
+def _pedigree_view(entity):
+    view = dict(entity.get("data") or {})
+    view["id"] = entity.get("id")
+    return view
+
+
+def _parent_name(entity):
+    return (entity.get("data") or {}).get("name") or entity.get("id")
+
+
+def _animal_brief(entity):
+    if entity is None:
+        return None
+    return {
+        "id": entity["id"],
+        "name": _parent_name(entity),
+        "status": entity["status"],
+        "version": entity["version"],
+    }
+
+
+def assess_parents(sire, dam):
+    """Return (inbreeding coefficient, risk level, blocking reasons) for a sire/dam pair."""
+    blockers = []
+    for label, parent in (("父本", sire), ("母本", dam)):
+        if parent is None:
+            blockers.append("%s未指定或不存在" % label)
+            continue
+        status = parent.get("status")
+        name = _parent_name(parent)
+        if status == "quarantined":
+            blockers.append("%s %s 正在隔离" % (label, name))
+        elif status == "deceased":
+            blockers.append("%s %s 已死亡" % (label, name))
+        elif status != "active":
+            blockers.append("%s %s 当前状态（%s）不可参与繁育" % (label, name, status))
+    coefficient = None
+    risk_level = None
+    if sire is not None and dam is not None:
+        coefficient = inbreeding_coefficient(_pedigree_view(sire), _pedigree_view(dam))
+        if coefficient > INBREEDING_THRESHOLD:
+            risk_level = "high"
+            blockers.append(
+                "亲缘风险过高：近交系数 %.3f 超过上限 %.3f"
+                % (coefficient, INBREEDING_THRESHOLD)
+            )
+        elif coefficient > 0:
+            risk_level = "medium"
+        else:
+            risk_level = "low"
+    return coefficient, risk_level, blockers
+
+
 def _validate_pairing(actor, entity, data, lookup):
-    sire = _find_one(lookup, "animal", "id", data.get("sire_id"))
-    dam = _find_one(lookup, "animal", "id", data.get("dam_id"))
-    if not sire or not dam:
-        raise ValidationError("pairing requires two existing animals")
-    if sire["status"] != "active" or dam["status"] != "active":
-        raise ValidationError("pairing animals must be active")
-    if inbreeding_coefficient(sire["data"], dam["data"]) > 0.125:
-        raise ValidationError("pairing exceeds inbreeding threshold")
-    return {"approved_by": actor.user_id}
+    stored = dict(entity.get("data") or {})
+    stored.update(data)
+    sire = _find_one(lookup, "animal", "id", stored.get("sire_id"))
+    dam = _find_one(lookup, "animal", "id", stored.get("dam_id"))
+    _, _, blockers = assess_parents(sire, dam)
+    if blockers:
+        raise ValidationError("无法批准配对：" + "；".join(blockers))
+    return {
+        "approved_by": actor.user_id,
+        "sire_id": sire["id"],
+        "dam_id": dam["id"],
+        "sire_version": sire["version"],
+        "dam_version": dam["version"],
+        "review_reason": None,
+    }
+
+
+def _validate_pairing_complete(actor, entity, data, lookup):
+    stored = entity.get("data") or {}
+    sire = _find_one(lookup, "animal", "id", stored.get("sire_id"))
+    dam = _find_one(lookup, "animal", "id", stored.get("dam_id"))
+    _, _, blockers = assess_parents(sire, dam)
+    if blockers:
+        raise ValidationError("无法安排完成：" + "；".join(blockers))
+    return {}
 
 
 CUSTOM_CREATE = {'animal': _validate_animal}
-CUSTOM_TRANSITIONS = {('pairing', 'approve'): _validate_pairing}
+CUSTOM_TRANSITIONS = {('pairing', 'approve'): _validate_pairing, ('pairing', 'complete'): _validate_pairing_complete}
 
 
 class RuleEngine:
@@ -98,13 +170,39 @@ class RuleEngine:
             (kind, action), self.ROLE_ACTIONS.get(action, ("admin",))
         )
         self._ensure_role(actor, allowed_roles)
-        self._require(data, self.ACTION_REQUIRED.get((kind, action), ()))
+        required = self.ACTION_REQUIRED.get((kind, action), ())
+        if required:
+            known = dict(entity.get("data") or {})
+            known.update(data)
+            self._require(known, required)
         custom = CUSTOM_TRANSITIONS.get((kind, action))
         extra = custom(actor, entity, data, lookup) if custom else {}
         patch = dict(data)
         if extra:
             patch.update(extra)
         return next_status, patch
+
+    def review_pairing(self, pairing, animals_by_id):
+        data = pairing.get("data") or {}
+        sire = animals_by_id.get(data.get("sire_id"))
+        dam = animals_by_id.get(data.get("dam_id"))
+        coefficient, risk_level, blockers = assess_parents(sire, dam)
+        return {
+            "id": pairing["id"],
+            "status": pairing["status"],
+            "version": pairing["version"],
+            "proposed_by": data.get("proposed_by"),
+            "approved_by": data.get("approved_by"),
+            "review_reason": data.get("review_reason"),
+            "sire": _animal_brief(sire),
+            "dam": _animal_brief(dam),
+            "sire_version": data.get("sire_version"),
+            "dam_version": data.get("dam_version"),
+            "inbreeding_coefficient": coefficient,
+            "risk_level": risk_level,
+            "blockers": blockers,
+            "approvable": pairing["status"] == "proposed" and not blockers,
+        }
 
 
 def _find_one(lookup, kind, field, value):

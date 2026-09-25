@@ -11,7 +11,7 @@
 - `src/service.py`：用例编排、幂等处理、版本控制和审计写入。
 - `src/http_api.py`：HTTP路由、请求解析和统一错误响应。
 - `src/audit.py`：实体操作审计时间线。
-- `static/index.html`：最小演示页面。
+- `static/index.html`：配对复核台首页。
 - `tests/`：完整流程、规则和失败场景测试。
 
 ## 初始化与启动
@@ -33,9 +33,16 @@ python3 app.py --db ./data.db --port 8308
 - `POST /api/<kind>`：创建对象；请求体为JSON。
 - `GET /api/entities/<id>`：读取对象当前版本。
 - `POST /api/entities/<id>/actions`：提交`{"action":"动作名","data":{...},"expected_version":数字}`。
+- `GET /api/pairing-review`：配对复核台数据，待复核/已生效配对附带亲本姓名、健康状态、近交系数、风险等级与阻断原因。
 - `GET /api/audit`：读取审计记录。
 
 请求身份通过`X-User-Id`和`X-Role`请求头传入。创建和动作的可执行角色由规则引擎控制。
+
+## 配对复核规则
+
+- 批准配对时校验双方亲本必须处于`active`；亲本正在隔离或已死亡、近交系数超过`0.125`都会被拒绝，并在错误信息中写明原因。
+- 批准结果会记录双方亲本当时的版本（`sire_version`/`dam_version`）和批准人。
+- 亲本之后被隔离或死亡，相关已生效配对自动转回待复核（`proposed`）并记录原因，亲本恢复健康前不能安排完成；解除隔离后需协调员重新确认。
 
 ## 测试
 

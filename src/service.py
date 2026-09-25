@@ -56,7 +56,43 @@ class DomainService:
             updated["status"],
             {"patch": patch},
         )
+        if entity["kind"] == "animal" and updated["status"] in ("quarantined", "deceased"):
+            self._return_pairings_to_review(updated, actor)
         return updated
+
+    def _return_pairings_to_review(self, animal, actor):
+        name = animal["data"].get("name") or animal["id"]
+        if animal["status"] == "quarantined":
+            reason = "亲本 %s 正在隔离" % name
+        else:
+            reason = "亲本 %s 已死亡" % name
+        for pairing in self.repository.list_entities(kind="pairing", status="approved"):
+            data = pairing["data"]
+            if animal["id"] not in (data.get("sire_id"), data.get("dam_id")):
+                continue
+            merged = dict(data)
+            merged["review_reason"] = reason
+            self.repository.update_entity(pairing["id"], None, "proposed", merged)
+            self.audit.record(
+                pairing["id"],
+                actor,
+                "return_to_review",
+                "approved",
+                "proposed",
+                {"reason": reason, "animal_id": animal["id"]},
+            )
+
+    def pairing_review(self):
+        animals = {
+            animal["id"]: animal
+            for animal in self.repository.list_entities(kind="animal")
+        }
+        items = []
+        for pairing in self.repository.list_entities(kind="pairing"):
+            if pairing["status"] not in ("proposed", "approved"):
+                continue
+            items.append(self.rules.review_pairing(pairing, animals))
+        return items
 
     def get(self, entity_id):
         entity = self.repository.get_entity(entity_id)
